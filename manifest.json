@@ -38,10 +38,10 @@
           "default": "Q5_K_M",
           "tooltip": "GGUF quantization level. Less VRAM = slightly less accurate.",
           "options": [
-            { "value": "Q4_K_M", "label": "Q4_K_M  (≈ 4 GB VRAM)" },
-            { "value": "Q5_K_M", "label": "Q5_K_M  (≈ 5 GB VRAM)  [recommended]" },
-            { "value": "Q6_K",   "label": "Q6_K    (≈ 6 GB VRAM)" },
-            { "value": "Q8_0",   "label": "Q8_0    (≈ 8 GB VRAM)" }
+            { "value": "Q4_K_M", "label": "Q4_K_M" },
+            { "value": "Q5_K_M", "label": "Q5_K_M" },
+            { "value": "Q6_K",   "label": "Q6_K" },
+            { "value": "Q8_0",   "label": "Q8_0" }
           ]
         },
         {
@@ -78,9 +78,9 @@
           "type": "select",
           "default": 768,
           "options": [
-            { "value": 512,  "label": "512  (fast, less detail — safe for 8 GB VRAM)" },
-            { "value": 768,  "label": "768  (balanced — recommended)" },
-            { "value": 1024, "label": "1024 (high detail — needs 10+ GB VRAM)" }
+            { "value": 512,  "label": "512" },
+            { "value": 768,  "label": "768" },
+            { "value": 1024, "label": "1024" }
           ],
           "tooltip": "Voxel grid resolution used for the post-generation narrow-band remesh. Higher = fewer holes and junction artifacts, but more VRAM and time."
         },
@@ -111,8 +111,8 @@
           "default": 1024,
           "tooltip": "Diffusion resolution for texture SLaT encoding. 1024 gives better quality.",
           "options": [
-            { "value": 512,  "label": "512  (fast)" },
-            { "value": 1024, "label": "1024 (recommended)" }
+            { "value": 512,  "label": "512" },
+            { "value": 1024, "label": "1024" }
           ]
         },
         {
@@ -123,7 +123,7 @@
           "tooltip": "Output texture atlas resolution. Larger = sharper textures.",
           "options": [
             { "value": 1024, "label": "1024" },
-            { "value": 2048, "label": "2048 (recommended)" }
+            { "value": 2048, "label": "2048" }
           ]
         },
         {
