@@ -4,7 +4,7 @@
   "type": "model",
   "source": "https://huggingface.co/Aero-Ex/Trellis2-GGUF",
   "description": "Aero-Ex Trellis.2 — GGUF quantized image-to-3D model (1–3 B params). Generates a geometry mesh in one pass via sparse structure + shape SLaT. Requires ~6–10 GB VRAM depending on quantization.",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "author": "Lightning Pixel",
   "generator_class": "Trellis2GGUFGenerator",
   "vram_gb": 8,

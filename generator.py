@@ -205,6 +205,73 @@ class Trellis2GGUFGenerator(BaseGenerator):
 
         return str(vision_dir)
 
+    def _apply_blackwell_patch(self, torch) -> None:
+        """
+        triton-windows 3.3.x (the version paired with torch 2.7) compiles Triton JIT
+        kernels targeting SM 9.0 (Hopper) when it encounters an unknown SM like 12.x
+        (Blackwell).  The resulting cubin cannot load on SM 12.x → "no kernel image".
+
+        Workaround: patch Triton's nvidia driver to report SM 9.0 for Blackwell devices.
+        The CUDA driver will then PTX-JIT the kernel to native SM 12.x code at first run
+        (forward PTX compatibility).  Slightly slower first inference, but functional.
+
+        Also attempts to switch trellis2_gguf's sparse-conv backend away from flex_gemm
+        if an alternative is registered (e.g. spconv), which avoids Triton entirely.
+        """
+        sm_major, sm_minor = torch.cuda.get_device_capability()
+        if sm_major < 12:
+            return
+
+        print(f"[Trellis2] Blackwell GPU detected (SM {sm_major}.{sm_minor}).")
+
+        # ── 1. Try non-Triton sparse-conv backend first ──────────────────── #
+        try:
+            import trellis2_gguf.modules.sparse.conv.conv as _conv_mod
+            import trellis2_gguf.config as _t2cfg
+            current = getattr(_t2cfg, "CONV", "flex_gemm")
+            alts = [k for k in getattr(_conv_mod, "_backends", {}) if k != current]
+            if alts:
+                _t2cfg.CONV = alts[0]
+                print(f"[Trellis2] Blackwell: switched sparse-conv backend '{current}' -> '{alts[0]}'")
+                return
+        except Exception as _e:
+            print(f"[Trellis2] Blackwell: backend switch unavailable ({_e}), trying Triton SM patch.")
+
+        # ── 2. Patch Triton SM detection: report SM 9.0 for SM 12.x ──────── #
+        # triton-windows 3.3 knows SM 9.0 (Hopper) and generates valid PTX for it.
+        # CUDA's forward PTX compatibility then JIT-compiles to native SM 12.x.
+        try:
+            import triton.backends.nvidia.driver as _nv_drv
+            _cls = None
+            for attr in dir(_nv_drv):
+                obj = getattr(_nv_drv, attr)
+                if isinstance(obj, type) and hasattr(obj, "get_device_capability"):
+                    _cls = obj
+                    break
+            if _cls is not None:
+                _orig_cap = _cls.get_device_capability
+                def _cap_hopper_fallback(self, device=0):
+                    major, minor = _orig_cap(self, device)
+                    if major >= 12:
+                        return (9, 0)
+                    return (major, minor)
+                _cls.get_device_capability = _cap_hopper_fallback
+                print("[Trellis2] Blackwell: Triton SM patched to 9.0 (PTX forward-compat).")
+            else:
+                # Newer triton may expose it as a module-level function
+                if hasattr(_nv_drv, "get_device_capability"):
+                    _orig_fn = _nv_drv.get_device_capability
+                    def _fn_fallback(device=0):
+                        major, minor = _orig_fn(device)
+                        if major >= 12:
+                            return (9, 0)
+                        return (major, minor)
+                    _nv_drv.get_device_capability = _fn_fallback
+                    print("[Trellis2] Blackwell: Triton SM fn patched to 9.0.")
+        except Exception as _e:
+            print(f"[Trellis2] Blackwell: Triton SM patch failed ({_e}). "
+                  "Generation may fail — a triton-windows update for SM 12.x is required.")
+
     def _load_pipeline(self, gguf_quant: str) -> None:
         import os
         from trellis2_gguf.pipelines import Trellis2ImageTo3DPipeline
@@ -212,6 +279,9 @@ class Trellis2GGUFGenerator(BaseGenerator):
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"[Trellis2GGUFGenerator] Loading pipeline (GGUF {gguf_quant}) on {device} ...")
+
+        if device == "cuda":
+            self._apply_blackwell_patch(torch)
 
         pipeline = Trellis2ImageTo3DPipeline.from_pretrained(
             str(self._weights_dir),
