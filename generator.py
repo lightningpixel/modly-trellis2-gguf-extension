@@ -254,13 +254,23 @@ class Trellis2GGUFGenerator(BaseGenerator):
                 v = _ver_from_path(p) or _ver_from_binary(p)
                 candidates.append((v, p))
 
-        # 3. triton-windows bundled ptxas (triton >= 3.4 bundles ptxas 12.8+)
+        # 3. triton-windows bundled ptxas (inside the triton package dir)
         try:
             import triton as _triton
             _triton_dir = Path(_triton.__file__).parent
             for _p in _triton_dir.rglob("ptxas.exe"):
                 _v = _ver_from_binary(str(_p))
                 candidates.append((_v, str(_p)))
+        except Exception:
+            pass
+
+        # 4. ptxas on the system PATH (triton-windows may install it to venv/Scripts)
+        try:
+            import shutil as _shutil
+            _ptxas_path = _shutil.which("ptxas.exe") or _shutil.which("ptxas")
+            if _ptxas_path:
+                _v = _ver_from_binary(_ptxas_path)
+                candidates.append((_v, _ptxas_path))
         except Exception:
             pass
 
@@ -315,6 +325,21 @@ class Trellis2GGUFGenerator(BaseGenerator):
         else:
             print(f"[Trellis2] Blackwell: TRITON_PTXAS_PATH already set to "
                   f"{_os.environ['TRITON_PTXAS_PATH']}")
+
+        # ── 1b. Isolate Triton kernel cache for Blackwell ─────────────────── #
+        # Kernels compiled for sm_90 (via the SM spoof below) are cached in
+        # ~/.triton/cache/.  After updating triton-windows, those stale sm_90
+        # cubins would be reused (same kernel hash, different arch) and fail on
+        # sm_120.  Point Triton at a separate Blackwell-specific cache dir so it
+        # always compiles fresh with whatever ptxas is available.
+        if "TRITON_CACHE_DIR" not in _os.environ:
+            try:
+                _bw_cache = Path(_os.path.expanduser("~")) / ".triton" / "cache-sm120"
+                _bw_cache.mkdir(parents=True, exist_ok=True)
+                _os.environ["TRITON_CACHE_DIR"] = str(_bw_cache)
+                print(f"[Trellis2] Blackwell: TRITON_CACHE_DIR={_bw_cache}")
+            except Exception as _ce:
+                print(f"[Trellis2] Blackwell: could not set TRITON_CACHE_DIR ({_ce}).")
 
         # ── 2. Try non-Triton sparse-conv backend ─────────────────────────── #
         try:
