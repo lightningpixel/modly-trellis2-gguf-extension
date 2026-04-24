@@ -114,9 +114,34 @@ class Trellis2GGUFGenerator(BaseGenerator):
     # Load / Unload                                                       #
     # ------------------------------------------------------------------ #
 
+    def _ensure_venv_on_path(self) -> None:
+        """Add the extension venv's site-packages to sys.path if not already present."""
+        import sys
+        import platform
+
+        venv = _EXTENSION_DIR / "venv"
+        if not venv.exists():
+            return
+
+        if platform.system() == "Windows":
+            sp = venv / "Lib" / "site-packages"
+        else:
+            lib = venv / "lib"
+            candidates = sorted(lib.glob("python3*/site-packages")) if lib.exists() else []
+            if not candidates:
+                return
+            sp = candidates[-1]
+
+        sp_str = str(sp)
+        if sp.exists() and sp_str not in sys.path:
+            sys.path.insert(0, sp_str)
+            print(f"[Trellis2GGUFGenerator] Added venv site-packages to sys.path: {sp_str}")
+
     def load(self) -> None:
         if self._model is not None:
             return
+
+        self._ensure_venv_on_path()
 
         if not self.is_downloaded():
             self._auto_download()
