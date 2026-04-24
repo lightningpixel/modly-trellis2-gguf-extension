@@ -351,10 +351,10 @@ def setup(python_exe: str, ext_dir: Path, gpu_sm: int, cuda_version: int = 0) ->
 
     # ── PyTorch — select build based on GPU architecture / CUDA driver ── #
     if gpu_sm >= 100 or cuda_version >= 128:
-        # Blackwell (RTX 50xx, B100…)
-        torch_pkgs  = ["torch==2.6.0", "torchvision==0.21.0"]
-        torch_index = "https://download.pytorch.org/whl/cu126"
-        print(f"[setup] GPU SM {gpu_sm}, CUDA {cuda_version} -> PyTorch 2.6 + CUDA 12.6 (Blackwell)")
+        # Blackwell (RTX 50xx, B100…) — SM 12.x kernels require PyTorch 2.7+
+        torch_pkgs  = ["torch==2.7.0", "torchvision==0.22.0"]
+        torch_index = "https://download.pytorch.org/whl/cu128"
+        print(f"[setup] GPU SM {gpu_sm}, CUDA {cuda_version} -> PyTorch 2.7 + CUDA 12.8 (Blackwell)")
     elif gpu_sm == 0 or gpu_sm >= 70:
         # Volta / Turing / Ampere / Ada / Hopper
         torch_pkgs  = ["torch==2.6.0", "torchvision==0.21.0"]
