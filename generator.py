@@ -464,12 +464,19 @@ class Trellis2GGUFGenerator(BaseGenerator):
             import cumesh.remeshing as _crm
 
             def _probe():
-                vp = _t.tensor(
-                    [[0,0,0],[1,0,0],[0,1,0],[0,0,1]], dtype=_t.float32, device="cuda"
-                )
-                fp = _t.tensor(
-                    [[0,1,2],[0,2,3],[0,1,3],[1,2,3]], dtype=_t.int32, device="cuda"
-                )
+                # Unit cube — 8 verts, 12 tris (cuBVH requires >= 8 triangles)
+                vp = _t.tensor([
+                    [0,0,0],[1,0,0],[1,1,0],[0,1,0],
+                    [0,0,1],[1,0,1],[1,1,1],[0,1,1],
+                ], dtype=_t.float32, device="cuda")
+                fp = _t.tensor([
+                    [0,2,1],[0,3,2],  # bottom
+                    [4,5,6],[4,6,7],  # top
+                    [0,1,5],[0,5,4],  # front
+                    [2,3,7],[2,7,6],  # back
+                    [0,4,7],[0,7,3],  # left
+                    [1,2,6],[1,6,5],  # right
+                ], dtype=_t.int32, device="cuda")
                 bvh    = _c.cuBVH(vp, fp)
                 center = vp.mean(0)
                 scale  = (vp.max(0).values - vp.min(0).values).max().item() * 2.0
@@ -850,7 +857,7 @@ class Trellis2GGUFGenerator(BaseGenerator):
                 resolution = remesh_resolution
                 band = 2 if remesh_resolution >= 768 else 1
                 remesh_scale = (resolution + 3 * band) / resolution * scale
-                cm.init(*_cumesh.remeshing.remesh_narrow_band_dc(
+                _rv, _rf = _cumesh.remeshing.remesh_narrow_band_dc(
                     _vt, _ft,
                     center=center,
                     scale=remesh_scale,
@@ -858,9 +865,25 @@ class Trellis2GGUFGenerator(BaseGenerator):
                     band=band,
                     project_back=0.9,
                     bvh=bvh,
-                ))
-                # No simplification after remesh — uniform triangles don't need it
-                # and simplification on remeshed topology reintroduces artifacts.
+                )
+                # Thin features (spikes, fins) may not be fully enclosed by dual
+                # contouring — apply pymeshlab hole-filling before loading into CuMesh.
+                try:
+                    import pymeshlab as _pml
+                    ms = _pml.MeshSet()
+                    ms.add_mesh(_pml.Mesh(
+                        vertex_matrix=_rv.cpu().numpy().astype(np.float64),
+                        face_matrix=_rf.cpu().numpy(),
+                    ))
+                    ms.meshing_remove_duplicate_faces()
+                    ms.meshing_repair_non_manifold_edges()
+                    ms.meshing_close_holes(maxholesize=200)
+                    _pm = ms.current_mesh()
+                    _rv = _torch.from_numpy(_pm.vertex_matrix().astype(np.float32)).cuda().contiguous()
+                    _rf = _torch.from_numpy(_pm.face_matrix().astype(np.int32)).cuda().contiguous()
+                except Exception:
+                    pass
+                cm.init(_rv, _rf)
                 print("[Trellis2GGUFGenerator] Remesh OK")
             except Exception as remesh_exc:
                 # Root cause: setup.py's _apply_patches used to overwrite cumesh's

@@ -327,7 +327,10 @@ def _apply_patches(sp: Path, patch_dir: Path) -> None:
 
     patch_map = {
         "flexible_dual_grid.py": _find_in_site(sp, "flexible_dual_grid.py"),
-        "remeshing.py":          _find_in_site(sp, "remeshing.py"),
+        # Exclude cumesh/remeshing.py — cumesh ships its own correct version;
+        # overwriting it with the trellis2_gguf patch breaks cumesh remesh.
+        "remeshing.py": [p for p in _find_in_site(sp, "remeshing.py")
+                         if "cumesh" not in p.parts],
     }
 
     for patch_name, targets in patch_map.items():
