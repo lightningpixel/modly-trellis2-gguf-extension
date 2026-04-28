@@ -1005,6 +1005,43 @@ class Trellis2GGUFGenerator(BaseGenerator):
     # Vendor / source setup                                               #
     # ------------------------------------------------------------------ #
 
+    def _patch_o_voxel_convert(self) -> None:
+        """Inject tiled_flexible_dual_grid_to_mesh into o_voxel.convert if missing.
+
+        Newer trellis2_gguf imports this function from o_voxel.convert, but the
+        pozzettiandrea.github.io wheel omits it.  The function is defined in
+        ComfyUI-Trellis2-GGUF's patch/flexible_dual_grid.py, which setup.py copies
+        to <site-packages>/trellis2_gguf_patch/.  Load it and inject the symbol.
+        """
+        try:
+            import o_voxel.convert as _ov
+            if hasattr(_ov, "tiled_flexible_dual_grid_to_mesh"):
+                return
+
+            import sys
+            import importlib.util as _ilu
+
+            for _sp in sys.path:
+                _pf = Path(_sp) / "trellis2_gguf_patch" / "flexible_dual_grid.py"
+                if _pf.exists():
+                    spec = _ilu.spec_from_file_location("_trellis2_fdg_patch", str(_pf))
+                    mod  = _ilu.module_from_spec(spec)
+                    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+                    if hasattr(mod, "tiled_flexible_dual_grid_to_mesh"):
+                        _ov.tiled_flexible_dual_grid_to_mesh = mod.tiled_flexible_dual_grid_to_mesh
+                        print("[Trellis2] Injected tiled_flexible_dual_grid_to_mesh into o_voxel.convert")
+                    else:
+                        print("[Trellis2] WARNING: patch/flexible_dual_grid.py does not define "
+                              "tiled_flexible_dual_grid_to_mesh. Click Repair to update the extension.")
+                    return
+
+            print("[Trellis2] WARNING: trellis2_gguf_patch/flexible_dual_grid.py not found — "
+                  "tiled_flexible_dual_grid_to_mesh missing. Click Repair to reinstall the extension.")
+        except ImportError:
+            pass  # o_voxel not yet installed — setup.py will handle it
+        except Exception as exc:
+            print(f"[Trellis2] WARNING: could not patch o_voxel.convert: {exc}")
+
     def _ensure_comfyui_gguf(self) -> None:
         """
         Ensure ComfyUI-GGUF (city96) files are present at the path that trellis2_gguf's
@@ -1124,6 +1161,10 @@ class Trellis2GGUFGenerator(BaseGenerator):
             _hf_val.validate_repo_id = _patched_validate
         except Exception:
             pass
+
+        # Patch o_voxel.convert before trellis2_gguf is imported — newer versions of
+        # fdg_vae.py import tiled_flexible_dual_grid_to_mesh which is absent from the wheel.
+        self._patch_o_voxel_convert()
 
         try:
             from trellis2_gguf.pipelines import Trellis2ImageTo3DPipeline  # noqa
