@@ -203,7 +203,10 @@ def _install_cuda_wheels(venv: Path, gpu_sm: int, cuda_ver: int = 0) -> None:
 
         print(f"[setup] Installing {lib} from {url} …")
         try:
-            _pip(venv, "install", url)
+            # --force-reinstall ensures pip replaces an already-installed wheel
+            # even when the local version tag changed (e.g. cu126 → cu128).
+            # pip normally skips installs where the base version matches.
+            _pip(venv, "install", "--force-reinstall", "--no-deps", url)
             print(f"[setup] {lib} installed.")
         except subprocess.CalledProcessError as exc:
             if lib in _CUDA_WHEELS_REQUIRED:
@@ -434,8 +437,14 @@ def _patch_o_voxel_tiled_fdg(sp: Path) -> None:
 def setup(python_exe: str, ext_dir: Path, gpu_sm: int, cuda_version: int = 0) -> None:
     venv = ext_dir / "venv"
 
-    print(f"[setup] Creating venv at {venv} …")
-    subprocess.run([python_exe, "-m", "venv", str(venv)], check=True)
+    if venv.exists():
+        # Repair path: venv already exists. Recreating it would fail on Windows
+        # because python.exe inside the venv is locked while the extension process
+        # is running. Skip creation and reuse the existing venv.
+        print(f"[setup] Using existing venv at {venv}")
+    else:
+        print(f"[setup] Creating venv at {venv} …")
+        subprocess.run([python_exe, "-m", "venv", str(venv)], check=True)
 
     # ── PyTorch — select build based on GPU architecture / CUDA driver ── #
     if gpu_sm >= 100 or cuda_version >= 128:
