@@ -376,6 +376,28 @@ class Trellis2GGUFGenerator(BaseGenerator):
         _os.environ.setdefault("CUMM_DISABLE_JIT", "1")
         print("[Trellis2] Blackwell: SPCONV_DISABLE_JIT=1, CUMM_DISABLE_JIT=1")
 
+        # ── 1e. Triton ptx_get_version shim for CUDA 13.x ─────────────────── #
+        # triton-windows 3.3.x raises RuntimeError for any CUDA version it doesn't
+        # know about (>= 13.0 as of 2026).  PTX ISA 8.5 (CUDA 12.8) is forward-
+        # compatible with SM 12.x and beyond, so capping unknown versions to (12, 8)
+        # lets Triton JIT-compile kernels correctly on newer hardware.
+        try:
+            import triton.backends.nvidia.compiler as _tnc_bw
+            if not getattr(_tnc_bw, "_cuda13x_compat_patched", False):
+                _orig_ptx_bw = _tnc_bw.ptx_get_version
+
+                def _ptx_get_compat(cv, _orig=_orig_ptx_bw):
+                    try:
+                        return _orig(cv)
+                    except RuntimeError:
+                        return _orig((12, 8))  # cap to highest known PTX ISA
+
+                _tnc_bw.ptx_get_version           = _ptx_get_compat
+                _tnc_bw._cuda13x_compat_patched    = True
+                print("[Trellis2] Blackwell: patched triton ptx_get_version (CUDA 13.x compat)")
+        except Exception as _e_ptx:
+            print(f"[Trellis2] Blackwell: triton ptx_get_version patch failed ({_e_ptx})")
+
         # ── 1d. spconv bfloat16 → float16 cast ───────────────────────────── #
         # The pipeline loads in bfloat16 (precision="bf16").  spconv's C++ kernel
         # dispatch tables on Blackwell may not include bfloat16 entries, causing
@@ -455,7 +477,7 @@ class Trellis2GGUFGenerator(BaseGenerator):
                     )
                     if _venv_pip.exists():
                         _r = _sp2.run(
-                            [str(_venv_pip), "install", "triton-windows>=3.3.1,<3.4"],
+                            [str(_venv_pip), "install", "triton-windows>=3.3.1,<4.0"],
                             capture_output=True, text=True, timeout=300,
                         )
                         if _r.returncode == 0:

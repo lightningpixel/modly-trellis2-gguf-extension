@@ -241,10 +241,11 @@ def _install_triton_windows(venv: Path, torch_ver: str, gpu_sm: int = 0) -> None
         triton_spec = "triton-windows<3.5"
     elif tv >= (2, 7):
         if gpu_sm >= 100:
-            # Blackwell: 3.3.1+ bundles ptxas 12.8 with SM 12.x support
-            triton_spec = "triton-windows>=3.3.1,<3.4"
+            # Blackwell: >=3.3.1 for ptxas 12.8 + SM 12.x.  No <3.4 cap:
+            # newer releases add CUDA 13.x PTX mappings for recent drivers.
+            triton_spec = "triton-windows>=3.3.1,<4.0"
         else:
-            triton_spec = "triton-windows<3.4"
+            triton_spec = "triton-windows<4.0"
     else:
         triton_spec = "triton-windows"
 
