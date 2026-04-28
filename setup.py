@@ -168,43 +168,26 @@ def _install_cuda_wheels(venv: Path, gpu_sm: int, cuda_ver: int = 0) -> None:
     torch_ver    = _get_torch_version(venv)
     is_blackwell = gpu_sm >= 100 or cuda_ver >= 128
 
-    # Blackwell (SM 12.x / CUDA 12.8+): prefer cu128, fall back to cu126.
-    # cu126 wheels do NOT contain SM 12.0 kernels and will crash at runtime.
-    preferred_cuda_tags: list[str] | None = ["cu128", "cu126"] if is_blackwell else None
+    # Blackwell (SM 12.x / CUDA 12.8+): require cu128 directly.
+    # cu128 wheels exist for all packages and are the only ones with SM 12.x kernels.
+    preferred_cuda_tags: list[str] | None = ["cu128"] if is_blackwell else None
 
     print(f"[setup] Installing CUDA wheels (python={python_tag}, platform={platform_tag}, torch={torch_ver}) …")
 
     for lib in _CUDA_WHEELS:
         print(f"[setup] Finding wheel for {lib} …")
-        url, matched_cuda = _find_wheel_url(lib, python_tag, platform_tag, torch_ver, preferred_cuda_tags)
+        url, _ = _find_wheel_url(lib, python_tag, platform_tag, torch_ver, preferred_cuda_tags)
         if url is None:
             if lib in _CUDA_WHEELS_REQUIRED:
+                cuda_hint = " (cu128)" if is_blackwell else ""
                 print(
-                    f"[setup] ERROR: No compatible wheel found for {lib} (torch {torch_ver}).\n"
+                    f"[setup] ERROR: No compatible wheel found for {lib} (torch {torch_ver}{cuda_hint}).\n"
                     f"[setup]   This is a required dependency — the extension will fail to load.\n"
                     f"[setup]   Check https://pozzettiandrea.github.io/cuda-wheels/{lib}/ for available wheels."
                 )
             else:
                 print(f"[setup] WARNING: No wheel found for {lib} — texture baking will be unavailable.")
             continue
-
-        # Blackwell + cu126 fallback: cu126 wheels lack SM 12.0 kernels → runtime crash.
-        if is_blackwell and matched_cuda and matched_cuda != "cu128":
-            print(
-                f"[setup] {'ERROR' if lib in _CUDA_WHEELS_REQUIRED else 'WARNING'}: "
-                f"{lib} — only {matched_cuda} wheel available; no cu128 build found.\n"
-                f"[setup]   Blackwell GPUs (RTX 50xx, SM 12.x) require CUDA 12.8 kernels.\n"
-                f"[setup]   Installing a {matched_cuda} wheel will crash at runtime with:\n"
-                f"[setup]     CUDA error: no kernel image is available for execution on the device\n"
-                f"[setup]   Check for a cu128 wheel at:\n"
-                f"[setup]     https://pozzettiandrea.github.io/cuda-wheels/{lib}/\n"
-                f"[setup]   Or wait for the maintainer to publish a cu128 build."
-            )
-            if lib in _CUDA_WHEELS_REQUIRED:
-                print(f"[setup]   Skipping {lib} install to avoid a known crash on Blackwell.")
-                continue
-            # Optional wheels: install anyway so non-Blackwell paths can still load them,
-            # but the warning above makes the risk explicit.
 
         print(f"[setup] Installing {lib} from {url} …")
         try:
