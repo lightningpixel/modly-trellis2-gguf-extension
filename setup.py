@@ -97,14 +97,21 @@ def _get_torch_version(venv: Path) -> str:
 # Custom CUDA wheels (pozzettiandrea.github.io)                                #
 # --------------------------------------------------------------------------- #
 
-def _find_wheel_url(lib_name: str, python_tag: str, platform_tag: str, torch_ver: str) -> str | None:
+def _find_wheel_url(
+    lib_name: str,
+    python_tag: str,
+    platform_tag: str,
+    torch_ver: str,
+    preferred_cuda_tags: list[str] | None = None,
+) -> tuple[str | None, str | None]:
     """
     Fetch the pozzettiandrea.github.io wheel index for lib_name and return
-    the best matching wheel URL for (python_tag, platform_tag, torch_ver).
+    (url, cuda_tag) for the best matching wheel.
 
-    Tries the exact torch version first, then falls back to the closest
-    lower version available on the index.
-    Returns None if the index page is unreachable or no match found.
+    preferred_cuda_tags: ordered list of CUDA tags to try (e.g. ["cu128", "cu126"]).
+    Each tag is tried in order, with torch-version fallback within each tag.
+    When None, no CUDA filtering is applied (any wheel matches).
+    Returns (None, None) if the index is unreachable or no match found.
     """
     index_url = f"{_WHEELS_INDEX_BASE}{lib_name}/"
     try:
@@ -112,7 +119,7 @@ def _find_wheel_url(lib_name: str, python_tag: str, platform_tag: str, torch_ver
             html = resp.read().decode("utf-8")
     except Exception as exc:
         print(f"[setup] WARNING: Could not fetch wheel index for {lib_name}: {exc}")
-        return None
+        return None, None
 
     # Extract all .whl href links
     links = re.findall(r'href=["\']([^"\']*\.whl)["\']', html)
@@ -129,7 +136,7 @@ def _find_wheel_url(lib_name: str, python_tag: str, platform_tag: str, torch_ver
     major, minor = int(parts[0]), int(parts[1])
     tv_tag = f"{major}{minor}"
 
-    def _candidates(maj: int, min_: int) -> list[str]:
+    def _candidates(maj: int, min_: int, cuda_tag: str | None) -> list[str]:
         # Index display names use "torch26", GitHub URLs use "torch2.6"
         tags = [f"torch{maj}{min_}", f"torch{maj}.{min_}"]
         return [
@@ -137,31 +144,39 @@ def _find_wheel_url(lib_name: str, python_tag: str, platform_tag: str, torch_ver
             if python_tag in link.split("/")[-1]
             and platform_tag in link.split("/")[-1]
             and any(t in link.split("/")[-1] for t in tags)
+            and (cuda_tag is None or cuda_tag in link.split("/")[-1])
         ]
 
-    # Try exact version first, then fall back to lower minor versions
-    for m in range(minor, -1, -1):
-        matches = _candidates(major, m)
-        if matches:
-            if m != minor:
-                print(f"[setup] NOTE: No wheel for torch{tv_tag} — using torch{major}{m} fallback.")
-            return matches[0]
+    cuda_tags_to_try: list[str | None] = list(preferred_cuda_tags) if preferred_cuda_tags else [None]
 
-    return None
+    for cuda_tag in cuda_tags_to_try:
+        for m in range(minor, -1, -1):
+            matches = _candidates(major, m, cuda_tag)
+            if matches:
+                if m != minor:
+                    print(f"[setup] NOTE: No wheel for torch{tv_tag} — using torch{major}{m} fallback.")
+                return matches[0], cuda_tag
+
+    return None, None
 
 
-def _install_cuda_wheels(venv: Path, gpu_sm: int) -> None:
+def _install_cuda_wheels(venv: Path, gpu_sm: int, cuda_ver: int = 0) -> None:
     """Download and install custom CUDA wheels from pozzettiandrea.github.io."""
     is_win = platform.system() == "Windows"
     python_tag   = f"cp{sys.version_info.major}{sys.version_info.minor}"
     platform_tag = "win_amd64" if is_win else "linux_x86_64"
     torch_ver    = _get_torch_version(venv)
+    is_blackwell = gpu_sm >= 100 or cuda_ver >= 128
+
+    # Blackwell (SM 12.x / CUDA 12.8+): prefer cu128, fall back to cu126.
+    # cu126 wheels do NOT contain SM 12.0 kernels and will crash at runtime.
+    preferred_cuda_tags: list[str] | None = ["cu128", "cu126"] if is_blackwell else None
 
     print(f"[setup] Installing CUDA wheels (python={python_tag}, platform={platform_tag}, torch={torch_ver}) …")
 
     for lib in _CUDA_WHEELS:
         print(f"[setup] Finding wheel for {lib} …")
-        url = _find_wheel_url(lib, python_tag, platform_tag, torch_ver)
+        url, matched_cuda = _find_wheel_url(lib, python_tag, platform_tag, torch_ver, preferred_cuda_tags)
         if url is None:
             if lib in _CUDA_WHEELS_REQUIRED:
                 print(
@@ -172,6 +187,25 @@ def _install_cuda_wheels(venv: Path, gpu_sm: int) -> None:
             else:
                 print(f"[setup] WARNING: No wheel found for {lib} — texture baking will be unavailable.")
             continue
+
+        # Blackwell + cu126 fallback: cu126 wheels lack SM 12.0 kernels → runtime crash.
+        if is_blackwell and matched_cuda and matched_cuda != "cu128":
+            print(
+                f"[setup] {'ERROR' if lib in _CUDA_WHEELS_REQUIRED else 'WARNING'}: "
+                f"{lib} — only {matched_cuda} wheel available; no cu128 build found.\n"
+                f"[setup]   Blackwell GPUs (RTX 50xx, SM 12.x) require CUDA 12.8 kernels.\n"
+                f"[setup]   Installing a {matched_cuda} wheel will crash at runtime with:\n"
+                f"[setup]     CUDA error: no kernel image is available for execution on the device\n"
+                f"[setup]   Check for a cu128 wheel at:\n"
+                f"[setup]     https://pozzettiandrea.github.io/cuda-wheels/{lib}/\n"
+                f"[setup]   Or wait for the maintainer to publish a cu128 build."
+            )
+            if lib in _CUDA_WHEELS_REQUIRED:
+                print(f"[setup]   Skipping {lib} install to avoid a known crash on Blackwell.")
+                continue
+            # Optional wheels: install anyway so non-Blackwell paths can still load them,
+            # but the warning above makes the risk explicit.
+
         print(f"[setup] Installing {lib} from {url} …")
         try:
             _pip(venv, "install", url)
@@ -392,7 +426,7 @@ def setup(python_exe: str, ext_dir: Path, gpu_sm: int, cuda_version: int = 0) ->
         _pip(venv, "install", "rembg", "onnxruntime")
 
     # ── Custom CUDA wheels (cumesh, nvdiffrast, flex_gemm, …) ─────────── #
-    _install_cuda_wheels(venv, gpu_sm)
+    _install_cuda_wheels(venv, gpu_sm, cuda_version)
 
     # ── triton-windows ────────────────────────────────────────────────── #
     torch_ver = _get_torch_version(venv)
