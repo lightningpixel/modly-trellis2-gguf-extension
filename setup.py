@@ -47,6 +47,7 @@ _PY_PACKAGES = [
     "open3d",
     "rectpack",
     "requests",
+    "plyfile",
     "huggingface_hub",
     "transformers==5.2.0",
     "accelerate",

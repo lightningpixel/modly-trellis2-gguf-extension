@@ -1005,6 +1005,37 @@ class Trellis2GGUFGenerator(BaseGenerator):
     # Vendor / source setup                                               #
     # ------------------------------------------------------------------ #
 
+    def _ensure_pip_packages(self, packages: list[str]) -> None:
+        """Install missing packages into the extension venv on-the-fly."""
+        import importlib
+        import platform
+        import subprocess as _sp
+
+        missing = []
+        for pkg in packages:
+            mod = pkg.replace("-", "_").split("==")[0]
+            try:
+                importlib.import_module(mod)
+            except ImportError:
+                missing.append(pkg)
+
+        if not missing:
+            return
+
+        pip = _EXTENSION_DIR / "venv" / (
+            "Scripts/pip.exe" if platform.system() == "Windows" else "bin/pip"
+        )
+        if not pip.exists():
+            print(f"[Trellis2] WARNING: cannot auto-install {missing} — venv pip not found")
+            return
+
+        print(f"[Trellis2] Auto-installing missing packages: {missing}")
+        try:
+            _sp.run([str(pip), "install", *missing], check=True, timeout=120)
+            print(f"[Trellis2] Installed: {missing}")
+        except Exception as exc:
+            print(f"[Trellis2] WARNING: failed to install {missing}: {exc}")
+
     def _patch_o_voxel_convert(self) -> None:
         """Inject tiled_flexible_dual_grid_to_mesh into o_voxel.convert if missing.
 
@@ -1161,6 +1192,10 @@ class Trellis2GGUFGenerator(BaseGenerator):
             _hf_val.validate_repo_id = _patched_validate
         except Exception:
             pass
+
+        # Ensure o_voxel's optional dependencies are present (plyfile is not in
+        # _PY_PACKAGES on older installs and o_voxel/io/ply.py imports it at module load).
+        self._ensure_pip_packages(["plyfile"])
 
         # Patch o_voxel.convert before trellis2_gguf is imported — newer versions of
         # fdg_vae.py import tiled_flexible_dual_grid_to_mesh which is absent from the wheel.
