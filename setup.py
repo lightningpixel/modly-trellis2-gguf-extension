@@ -174,6 +174,18 @@ def _install_cuda_wheels(venv: Path, gpu_sm: int, cuda_ver: int = 0) -> None:
 
     print(f"[setup] Installing CUDA wheels (python={python_tag}, platform={platform_tag}, torch={torch_ver}) …")
 
+    # On Blackwell, uninstall existing CUDA wheels before reinstalling.
+    # pip considers 0.0.1+cu126torch2.7 and 0.0.1+cu128torch2.7 as the same base
+    # version (local identifiers are excluded from sort order) and may skip the
+    # install thinking the package is already up-to-date.  Explicit uninstall
+    # ensures the cu128 wheel always replaces a stale cu126 build.
+    if is_blackwell:
+        for lib in _CUDA_WHEELS:
+            try:
+                _pip(venv, "uninstall", "-y", lib)
+            except subprocess.CalledProcessError:
+                pass  # not installed — nothing to do
+
     for lib in _CUDA_WHEELS:
         print(f"[setup] Finding wheel for {lib} …")
         url, _ = _find_wheel_url(lib, python_tag, platform_tag, torch_ver, preferred_cuda_tags)
