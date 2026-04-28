@@ -48,6 +48,8 @@ _PY_PACKAGES = [
     "rectpack",
     "requests",
     "plyfile",
+    "zstandard",
+    "tqdm",
     "huggingface_hub",
     "transformers==5.2.0",
     "accelerate",

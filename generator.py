@@ -1195,7 +1195,7 @@ class Trellis2GGUFGenerator(BaseGenerator):
 
         # Ensure o_voxel's optional dependencies are present (plyfile is not in
         # _PY_PACKAGES on older installs and o_voxel/io/ply.py imports it at module load).
-        self._ensure_pip_packages(["plyfile"])
+        self._ensure_pip_packages(["plyfile", "zstandard", "tqdm"])
 
         # Patch o_voxel.convert before trellis2_gguf is imported — newer versions of
         # fdg_vae.py import tiled_flexible_dual_grid_to_mesh which is absent from the wheel.
