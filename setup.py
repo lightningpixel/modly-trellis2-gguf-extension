@@ -387,13 +387,11 @@ def _find_in_site(sp: Path, filename: str) -> list[Path]:
 
 
 def _patch_o_voxel_tiled_fdg(sp: Path) -> None:
-    """Inject tiled_flexible_dual_grid_to_mesh into o_voxel/convert/__init__.py if absent.
+    """Append tiled_flexible_dual_grid_to_mesh to the installed o_voxel wheel.
 
-    Newer trellis2_gguf versions import this function from o_voxel.convert but the
-    pozzettiandrea.github.io wheel omits it.  The function is defined in the
-    ComfyUI-Trellis2-GGUF patch file, copied to trellis2_gguf_patch/ by setup.
-    We append a self-contained shim to o_voxel/convert/__init__.py that loads the
-    function on first import — idempotent and safe to run on every Repair.
+    Uses AST to extract only the target function from the patch file — avoids
+    executing top-level spconv imports that would fail outside their package context.
+    Idempotent; safe to run on every Repair.
     """
     target = sp / "o_voxel" / "convert" / "__init__.py"
     patch  = sp / "trellis2_gguf_patch" / "flexible_dual_grid.py"
@@ -401,37 +399,37 @@ def _patch_o_voxel_tiled_fdg(sp: Path) -> None:
     if not target.exists() or not patch.exists():
         return
 
-    content = target.read_text(encoding="utf-8")
-    if "tiled_flexible_dual_grid_to_mesh" in content:
+    existing = target.read_text(encoding="utf-8")
+    if "tiled_flexible_dual_grid_to_mesh" in existing:
         return  # already present
 
-    if "tiled_flexible_dual_grid_to_mesh" not in patch.read_text(encoding="utf-8"):
+    patch_text = patch.read_text(encoding="utf-8")
+    if "tiled_flexible_dual_grid_to_mesh" not in patch_text:
         print("[setup] WARNING: patch/flexible_dual_grid.py has no tiled_flexible_dual_grid_to_mesh")
         return
 
-    # Append a shim that lazily loads the function from the patch file.
-    # Using try/except NameError is the idiomatic Python way to check whether a
-    # bare name is defined in the current module scope.
-    shim = (
-        "\n\n# ---- trellis2_gguf compatibility patch (added by Modly setup) ----\n"
-        "try:\n"
-        "    tiled_flexible_dual_grid_to_mesh  # noqa: F821\n"
-        "except NameError:\n"
-        "    try:\n"
-        "        import importlib.util as _ilu_, os as _os_, sys as _sys_\n"
-        "        for _p_ in _sys_.path:\n"
-        "            _f_ = _os_.path.join(_p_, 'trellis2_gguf_patch', 'flexible_dual_grid.py')\n"
-        "            if _os_.path.isfile(_f_):\n"
-        "                _s_ = _ilu_.spec_from_file_location('_trellis2_fdg', _f_)\n"
-        "                _m_ = _ilu_.module_from_spec(_s_)\n"
-        "                _s_.loader.exec_module(_m_)\n"
-        "                tiled_flexible_dual_grid_to_mesh = getattr(_m_, 'tiled_flexible_dual_grid_to_mesh', None)\n"
-        "                break\n"
-        "    except Exception:\n"
-        "        pass\n"
-    )
-    target.write_text(content + shim, encoding="utf-8")
-    print("[setup] Patched o_voxel/convert/__init__.py with tiled_flexible_dual_grid_to_mesh")
+    import ast as _ast
+    try:
+        tree  = _ast.parse(patch_text)
+        lines = patch_text.splitlines()
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.FunctionDef) and node.name == "tiled_flexible_dual_grid_to_mesh":
+                dec_start = (node.decorator_list[0].lineno - 1
+                             if node.decorator_list else node.lineno - 1)
+                func_src  = "\n".join(lines[dec_start : node.end_lineno])
+
+                # Ensure torch is importable for @torch.no_grad() decorator
+                prefix = "\nimport torch" if "import torch" not in existing else ""
+                target.write_text(
+                    existing + prefix + "\n\n# ---- trellis2_gguf patch ----\n" + func_src + "\n",
+                    encoding="utf-8",
+                )
+                print("[setup] Patched o_voxel/convert/__init__.py with tiled_flexible_dual_grid_to_mesh")
+                return
+
+        print("[setup] WARNING: AST scan found no tiled_flexible_dual_grid_to_mesh in patch file.")
+    except Exception as exc:
+        print(f"[setup] WARNING: Could not patch o_voxel.convert: {exc}")
 
 
 # --------------------------------------------------------------------------- #

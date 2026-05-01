@@ -843,6 +843,20 @@ class Trellis2GGUFGenerator(BaseGenerator):
 
         self._check_cancelled(cancel_event)
 
+        # Trimesh's PBRMaterial defaults metallicFactor=1.0 which renders black
+        # in viewers without IBL. Trellis2 bakes color only, so reset to diffuse.
+        try:
+            _meshes = list(out_mesh.geometry.values()) if hasattr(out_mesh, 'geometry') else [out_mesh]
+            for _m in _meshes:
+                _mat = getattr(getattr(_m, 'visual', None), 'material', None)
+                if _mat is not None:
+                    if getattr(_mat, 'metallicFactor', None) is None or _mat.metallicFactor > 0.1:
+                        _mat.metallicFactor = 0.0
+                    if getattr(_mat, 'roughnessFactor', None) is None:
+                        _mat.roughnessFactor = 0.8
+        except Exception:
+            pass
+
         # --- Export ---
         self._report(progress_cb, 92, "Exporting textured mesh...")
         import torch as _torch_gc; _torch_gc.cuda.empty_cache()
@@ -1008,6 +1022,21 @@ class Trellis2GGUFGenerator(BaseGenerator):
         verts[:, 1] = _z
         verts[:, 2] = _y
 
+        # Strip the voxel-grid ground cap: where the sparse grid is truncated at the
+        # bottom, trellis creates a flat horizontal nappe of faces. In the viewer this
+        # shows up as a large circle on the floor. Remove faces that are (a) nearly
+        # horizontal (|normal_y| > 0.97) and (b) within the bottom 2% of mesh height.
+        _v0, _v1, _v2 = verts[faces[:, 0]], verts[faces[:, 1]], verts[faces[:, 2]]
+        _fn = np.cross(_v1 - _v0, _v2 - _v0).astype(np.float32)
+        _fl = np.linalg.norm(_fn, axis=1, keepdims=True)
+        _fn /= np.maximum(_fl, 1e-10)
+        _yc = (_v0[:, 1] + _v1[:, 1] + _v2[:, 1]) / 3.0
+        _y_min, _y_max = float(verts[:, 1].min()), float(verts[:, 1].max())
+        _cap = (np.abs(_fn[:, 1]) > 0.97) & (_yc < _y_min + (_y_max - _y_min) * 0.02)
+        if _cap.any():
+            print(f"[Trellis2GGUFGenerator] Stripped {_cap.sum()} ground cap faces")
+            faces = faces[~_cap]
+
         self.outputs_dir.mkdir(parents=True, exist_ok=True)
         name = f"{int(time.time())}_{uuid.uuid4().hex[:8]}.glb"
         path = self.outputs_dir / name
@@ -1018,7 +1047,11 @@ class Trellis2GGUFGenerator(BaseGenerator):
         # doubleSided=True ensures any face whose normal still points inward is rendered
         # from both sides, preventing see-through artifacts.
         mesh.visual = trimesh.visual.TextureVisuals(
-            material=trimesh.visual.material.PBRMaterial(doubleSided=True)
+            material=trimesh.visual.material.PBRMaterial(
+                doubleSided=True,
+                metallicFactor=0.0,
+                roughnessFactor=0.8,
+            )
         )
         mesh.export(str(path))
         return path
@@ -1061,35 +1094,56 @@ class Trellis2GGUFGenerator(BaseGenerator):
     def _patch_o_voxel_convert(self) -> None:
         """Inject tiled_flexible_dual_grid_to_mesh into o_voxel.convert if missing.
 
-        Newer trellis2_gguf imports this function from o_voxel.convert, but the
-        pozzettiandrea.github.io wheel omits it.  The function is defined in
-        ComfyUI-Trellis2-GGUF's patch/flexible_dual_grid.py, which setup.py copies
-        to <site-packages>/trellis2_gguf_patch/.  Load it and inject the symbol.
+        The patch file (patch/flexible_dual_grid.py) imports spconv internals that
+        cannot be resolved when loaded as a standalone module via importlib.  Instead
+        we use AST to extract only the target function's source and exec() it inside
+        o_voxel.convert's own __dict__, so all of the module's existing imports are
+        available to the function at definition and call time.
         """
         try:
             import o_voxel.convert as _ov
             if hasattr(_ov, "tiled_flexible_dual_grid_to_mesh"):
                 return
 
+            import ast as _ast
             import sys
-            import importlib.util as _ilu
 
             for _sp in sys.path:
                 _pf = Path(_sp) / "trellis2_gguf_patch" / "flexible_dual_grid.py"
                 if _pf.exists():
-                    spec = _ilu.spec_from_file_location("_trellis2_fdg_patch", str(_pf))
-                    mod  = _ilu.module_from_spec(spec)
-                    spec.loader.exec_module(mod)  # type: ignore[union-attr]
-                    if hasattr(mod, "tiled_flexible_dual_grid_to_mesh"):
-                        _ov.tiled_flexible_dual_grid_to_mesh = mod.tiled_flexible_dual_grid_to_mesh
-                        print("[Trellis2] Injected tiled_flexible_dual_grid_to_mesh into o_voxel.convert")
-                    else:
-                        print("[Trellis2] WARNING: patch/flexible_dual_grid.py does not define "
-                              "tiled_flexible_dual_grid_to_mesh. Click Repair to update the extension.")
+                    patch_text = _pf.read_text(encoding="utf-8")
+                    if "tiled_flexible_dual_grid_to_mesh" not in patch_text:
+                        print("[Trellis2] WARNING: patch/flexible_dual_grid.py has no "
+                              "tiled_flexible_dual_grid_to_mesh. Click Repair.")
+                        return
+
+                    # Extract just the target function via AST — avoids running the
+                    # patch file's top-level imports (spconv, etc.) which may fail.
+                    tree  = _ast.parse(patch_text)
+                    lines = patch_text.splitlines()
+                    for node in _ast.walk(tree):
+                        if (isinstance(node, _ast.FunctionDef)
+                                and node.name == "tiled_flexible_dual_grid_to_mesh"):
+                            dec_start = (node.decorator_list[0].lineno - 1
+                                         if node.decorator_list else node.lineno - 1)
+                            func_src  = "\n".join(lines[dec_start : node.end_lineno])
+
+                            # exec inside o_voxel.convert's namespace so the decorator
+                            # (@torch.no_grad) and any helpers resolve correctly.
+                            ns = _ov.__dict__
+                            if "torch" not in ns:
+                                import torch as _t; ns["torch"] = _t
+                            exec(compile(func_src, str(_pf), "exec"), ns)  # noqa: S102
+                            print("[Trellis2] Injected tiled_flexible_dual_grid_to_mesh "
+                                  "into o_voxel.convert")
+                            return
+
+                    print("[Trellis2] WARNING: AST scan found no "
+                          "tiled_flexible_dual_grid_to_mesh in patch file.")
                     return
 
             print("[Trellis2] WARNING: trellis2_gguf_patch/flexible_dual_grid.py not found — "
-                  "tiled_flexible_dual_grid_to_mesh missing. Click Repair to reinstall the extension.")
+                  "tiled_flexible_dual_grid_to_mesh missing. Click Repair.")
         except ImportError:
             pass  # o_voxel not yet installed — setup.py will handle it
         except Exception as exc:
@@ -1296,6 +1350,7 @@ class Trellis2GGUFGenerator(BaseGenerator):
         nh     = max(1, int(fh * scale))
         fg     = fg.resize((nw, nh), PILImage.LANCZOS)
 
-        result = PILImage.new("RGB", (iw, ih), (255, 255, 255))
-        result.paste(fg, ((iw - nw) // 2, (ih - nh) // 2))
+        sq     = max(iw, ih)
+        result = PILImage.new("RGB", (sq, sq), (255, 255, 255))
+        result.paste(fg, ((sq - nw) // 2, (sq - nh) // 2))
         return result
