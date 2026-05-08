@@ -399,9 +399,19 @@ def _patch_o_voxel_tiled_fdg(sp: Path) -> None:
     if not target.exists() or not patch.exists():
         return
 
-    existing = target.read_text(encoding="utf-8")
-    if "tiled_flexible_dual_grid_to_mesh" in existing:
-        return  # already present
+    existing  = target.read_text(encoding="utf-8")
+    has_func  = "tiled_flexible_dual_grid_to_mesh" in existing
+    needs_tqdm = (
+        "from tqdm import tqdm" not in existing
+        and "import tqdm" not in existing
+    )
+
+    # Function already present — only fix a missing tqdm import (repair path).
+    if has_func:
+        if needs_tqdm:
+            target.write_text("from tqdm import tqdm\n" + existing, encoding="utf-8")
+            print("[setup] Added missing tqdm import to o_voxel/convert/__init__.py")
+        return
 
     patch_text = patch.read_text(encoding="utf-8")
     if "tiled_flexible_dual_grid_to_mesh" not in patch_text:
@@ -418,8 +428,14 @@ def _patch_o_voxel_tiled_fdg(sp: Path) -> None:
                              if node.decorator_list else node.lineno - 1)
                 func_src  = "\n".join(lines[dec_start : node.end_lineno])
 
-                # Ensure torch is importable for @torch.no_grad() decorator
-                prefix = "\nimport torch" if "import torch" not in existing else ""
+                # Ensure imports required by the appended function are present.
+                extra_imports = []
+                if "import torch" not in existing:
+                    extra_imports.append("import torch")
+                if needs_tqdm:
+                    extra_imports.append("from tqdm import tqdm")
+                prefix = ("\n" + "\n".join(extra_imports)) if extra_imports else ""
+
                 target.write_text(
                     existing + prefix + "\n\n# ---- trellis2_gguf patch ----\n" + func_src + "\n",
                     encoding="utf-8",
