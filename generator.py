@@ -29,6 +29,12 @@ from services.generators.base import BaseGenerator, smooth_progress, GenerationC
 
 _EXTENSION_DIR = Path(__file__).parent
 
+# Attention backend: trellis2_gguf defaults to 'flash_attn', which we don't ship
+# (no prebuilt flash-attn wheel for Windows). Force PyTorch's native SDPA — read by
+# attention/config.py at import time, so it must be set before any trellis2_gguf import.
+import os as _os_env
+_os_env.environ.setdefault("ATTN_BACKEND", "sdpa")
+
 # HuggingFace model repo
 _HF_REPO = "Aero-Ex/Trellis2-GGUF"
 
@@ -161,13 +167,23 @@ class Trellis2GGUFGenerator(BaseGenerator):
         Returns path to Vision/ if ready, None on failure.
         """
         import os, json, shutil
-        vision_dir = self._weights_dir / "Vision"
-        if not vision_dir.exists():
+        fname = "dinov3-vitl16-pretrain-lvd1689m.safetensors"
+
+        # The safetensors can land in any of these Vision/ dirs depending on which
+        # model_dir triggered the download (a partial download into _weights_dir/Vision
+        # would otherwise force the gated HuggingFace fallback). Pick the first that
+        # actually holds the weights.
+        candidates = [
+            self._weights_dir / "Vision",
+            self.model_dir / "Vision",
+            self._weights_dir / "generate" / "Vision",
+            self._weights_dir / "refine" / "Vision",
+        ]
+        vision_dir = next((d for d in candidates if (d / fname).exists()), None)
+        if vision_dir is None:
             return None
 
-        src = vision_dir / "dinov3-vitl16-pretrain-lvd1689m.safetensors"
-        if not src.exists():
-            return None
+        src = vision_dir / fname
 
         # HuggingFace from_pretrained needs the weights file named model.safetensors
         dst = vision_dir / "model.safetensors"
@@ -602,6 +618,16 @@ class Trellis2GGUFGenerator(BaseGenerator):
         import os
         from trellis2_gguf.pipelines import Trellis2ImageTo3DPipeline
         import torch
+
+        # Safety net: if attention/config.py was imported elsewhere before our
+        # ATTN_BACKEND env default took effect, force SDPA now (flash_attn is absent).
+        try:
+            from trellis2_gguf.modules.attention import config as _attn_cfg
+            if _attn_cfg.BACKEND == "flash_attn":
+                _attn_cfg.BACKEND = "sdpa"
+                print("[Trellis2] Attention backend forced to sdpa (flash_attn unavailable)")
+        except Exception as _exc:
+            print(f"[Trellis2] Warning: could not set attention backend: {_exc}")
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"[Trellis2GGUFGenerator] Loading pipeline (GGUF {gguf_quant}) on {device} ...")
