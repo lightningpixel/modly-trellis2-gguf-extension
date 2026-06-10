@@ -274,7 +274,10 @@ def _install_trellis2_gguf(venv: Path) -> None:
     dest  = sp / "trellis2_gguf"
 
     if dest.exists():
-        print("[setup] trellis2_gguf already installed, skipping.")
+        # Don't re-download, but still ensure the standalone GGUF fallback patch is
+        # applied (idempotent) so an existing install gets fixed on the next Repair.
+        print("[setup] trellis2_gguf already installed; ensuring GGUF fallback patch.")
+        _patch_gguf_fallback_linear(sp)
         return
 
     print("[setup] Downloading ComfyUI-Trellis2-GGUF source from GitHub …")
@@ -315,8 +318,58 @@ def _install_trellis2_gguf(venv: Path) -> None:
 
     print(f"[setup] trellis2_gguf installed to {sp}.")
 
+    # ── Fix the standalone GGUF fallback Linear ────────────────────────── #
+    # Without ComfyUI, city96's GGUF ops can't import `comfy`, so trellis2_gguf
+    # falls back to GGMLOpsFallback.Linear. Upstream that fallback is a bare
+    # nn.Module, so GGMLSparseLinear loses GGMLLayer's _load_from_state_dict and
+    # the quantized (e.g. Q8_0) weights crash in load_state_dict's copy_().
+    _patch_gguf_fallback_linear(sp)
+
     # ── Apply patches ──────────────────────────────────────────────────── #
     _apply_patches(sp, patch_dest)
+
+
+def _patch_gguf_fallback_linear(sp: Path) -> None:
+    """
+    Make GGMLOpsFallback.Linear inherit GGMLLayer + nn.Linear so GGMLSparseLinear
+    keeps the custom _load_from_state_dict / cast_bias_weight path in a standalone
+    (non-ComfyUI) environment. Targeted, idempotent, and fails loudly if upstream
+    structure changed (so Repair surfaces it instead of shipping a silent crash).
+    """
+    target = sp / "trellis2_gguf" / "utils" / "gguf_utils.py"
+    if not target.exists():
+        raise RuntimeError(f"[setup] expected {target} after install, not found.")
+
+    text = target.read_text(encoding="utf-8")
+    if "_modly_fallback_linear" in text:
+        print("[setup] GGUF fallback Linear already patched, skipping.")
+        return
+
+    broken = (
+        "        class Linear(torch.nn.Module):\n"
+        "            def __init__(self, *args, **kwargs):\n"
+        "                super().__init__()\n"
+    )
+    fixed = (
+        "        class Linear(GGMLLayer, torch.nn.Linear):  # _modly_fallback_linear\n"
+        "            comfy_cast_weights = True\n"
+        "            def __init__(self, in_features, out_features, bias=True, device=None, dtype=None):\n"
+        "                torch.nn.Linear.__init__(self, in_features, out_features, bias=bias, device=device, dtype=dtype)\n"
+        "            def forward_comfy_cast_weights(self, input, *args, **kwargs):\n"
+        "                weight, bias = self.cast_bias_weight(input)\n"
+        "                return torch.nn.functional.linear(input, weight, bias)\n"
+        "            def forward(self, input, *args, **kwargs):\n"
+        "                return self.forward_comfy_cast_weights(input, *args, **kwargs)\n"
+    )
+    if broken not in text:
+        raise RuntimeError(
+            "[setup] Could not patch GGMLOpsFallback.Linear in gguf_utils.py: the "
+            "expected upstream code block was not found (Aero-Ex may have changed it). "
+            "Refusing to install a GGUF loader that would crash on quantized weights."
+        )
+
+    target.write_text(text.replace(broken, fixed, 1), encoding="utf-8")
+    print("[setup] Patched GGMLOpsFallback.Linear for standalone GGUF loading.")
 
 
 def _install_comfyui_gguf(venv: Path) -> None:
