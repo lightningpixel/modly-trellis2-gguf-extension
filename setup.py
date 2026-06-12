@@ -529,10 +529,14 @@ def setup(python_exe: str, ext_dir: Path, gpu_sm: int, cuda_version: int = 0) ->
         torch_index = "https://download.pytorch.org/whl/cu126"
         print(f"[setup] GPU SM {gpu_sm} -> PyTorch 2.6 + CUDA 12.6")
     else:
-        # Pascal (SM 6.x) — last PyTorch with SM 6.1 support
+        # Pascal (SM 6.x) — last PyTorch with SM 6.1 support.
+        # cu124 (not cu118): the custom CUDA wheels (cumesh, flex-gemm, …) ship
+        # nothing below cu124, so cu118 torch would ABI-mismatch the wheels and
+        # fail to import. cu124 stays within the CUDA 12.x minor-compat family
+        # used by the cu126/cu128 branches.
         torch_pkgs  = ["torch==2.5.1", "torchvision==0.20.1"]
-        torch_index = "https://download.pytorch.org/whl/cu118"
-        print(f"[setup] GPU SM {gpu_sm} (legacy) -> PyTorch 2.5 + CUDA 11.8")
+        torch_index = "https://download.pytorch.org/whl/cu124"
+        print(f"[setup] GPU SM {gpu_sm} (legacy) -> PyTorch 2.5 + CUDA 12.4")
 
     print("[setup] Installing PyTorch …")
     _pip(venv, "install", *torch_pkgs, "--index-url", torch_index)
@@ -542,11 +546,12 @@ def setup(python_exe: str, ext_dir: Path, gpu_sm: int, cuda_version: int = 0) ->
     _pip(venv, "install", *_PY_PACKAGES)
 
     # ── rembg (background removal) ───────────────────────────────────── #
+    # CPU onnxruntime only: the runtime always forces CPUExecutionProvider
+    # (see generator._preprocess force_cpu=True) to avoid corrupting the
+    # torch CUDA context. onnxruntime-gpu (rembg[gpu]) is unused and its
+    # wheel download fails pip hash verification.
     print("[setup] Installing rembg …")
-    if gpu_sm >= 70:
-        _pip(venv, "install", "rembg[gpu]")
-    else:
-        _pip(venv, "install", "rembg", "onnxruntime")
+    _pip(venv, "install", "rembg", "onnxruntime")
 
     # ── Custom CUDA wheels (cumesh, nvdiffrast, flex_gemm, …) ─────────── #
     _install_cuda_wheels(venv, gpu_sm, cuda_version)

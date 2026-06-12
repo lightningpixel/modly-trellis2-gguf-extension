@@ -39,9 +39,10 @@ _os_env.environ.setdefault("ATTN_BACKEND", "sdpa")
 _HF_REPO = "Aero-Ex/Trellis2-GGUF"
 
 # Files to download: all GGUF variants + JSON configs + Vision encoder + decoders/encoders
-# (skip BF16/FP8 safetensors which add ~80 GB to the download; skip texture weights)
+# (skip BF16/FP8 safetensors which add ~80 GB to the download)
 _HF_ALLOW_PATTERNS = [
     "pipeline.json",
+    "texturing_pipeline.json",
     "Vision/**",
     "decoders/**/*.json",
     "decoders/**/*.safetensors",
@@ -51,6 +52,10 @@ _HF_ALLOW_PATTERNS = [
     "refiner/*.gguf",
     "shape/*.json",
     "shape/*.gguf",
+    # texture GGUFs are required by the Texture Mesh node (~9 GB for all quants);
+    # without them this fallback download leaves that node unusable.
+    "texture/*.json",
+    "texture/*.gguf",
 ]
 
 # Sampler params — matched to ComfyUI reference workflow (Q4 high-quality results)
@@ -1247,14 +1252,40 @@ class Trellis2GGUFGenerator(BaseGenerator):
 
             def _resolve_local_path(basename, enable_gguf=False, gguf_quant="Q8_0", precision=None):
                 if enable_gguf:
-                    pattern = _os.path.join(_search_root, "**", f"{basename}_{gguf_quant}.gguf")
-                    hits = _glob.glob(pattern, recursive=True)
-                    if hits:
-                        model_file  = hits[0]
-                        config_file = model_file.replace(f"_{gguf_quant}.gguf", ".json")
-                        if not _os.path.exists(config_file):
-                            config_file = _os.path.join(_os.path.dirname(model_file), basename + ".json")
-                        return config_file, model_file, True
+                    # The 512 texture DiT GGUF is mis-quantised upstream: K-quants
+                    # (incl. Q5_K_M) yield semantically corrupt textures (colorful
+                    # noise) while 1024 is fine and the file content — not the
+                    # loader — is at fault. Q8_0 (non-K, byte-faithful) is immune,
+                    # so prefer it for that model, falling back to the requested
+                    # quant if the Q8_0 file is not on disk.
+                    quants = [gguf_quant]
+                    if (gguf_quant != "Q8_0"
+                            and "imgshape2tex" in basename and "_512_" in basename):
+                        quants.insert(0, "Q8_0")
+                    for quant in quants:
+                        pattern = _os.path.join(_search_root, "**", f"{basename}_{quant}.gguf")
+                        hits = _glob.glob(pattern, recursive=True)
+                        # Drop HF download cache and the upstream 'test/' staging
+                        # copies: both can hold the .gguf without its sibling .json
+                        # config, and glob may return them before the real file.
+                        # Segments are taken relative to the search root so a root
+                        # path that itself contains 'test' doesn't wipe every hit.
+                        hits = [h for h in hits
+                                if not {".cache", "test"} & set(
+                                    _os.path.relpath(h, _search_root)
+                                       .replace("/", _os.sep).split(_os.sep))]
+                        # Only accept a hit whose config JSON actually resolves, so
+                        # a config-less copy never shadows the real model.
+                        for model_file in hits:
+                            config_file = model_file.replace(f"_{quant}.gguf", ".json")
+                            if not _os.path.exists(config_file):
+                                config_file = _os.path.join(_os.path.dirname(model_file), basename + ".json")
+                            if _os.path.exists(config_file):
+                                if quant != gguf_quant:
+                                    print(f"[Trellis2] 512 texture model: using Q8_0 instead of {gguf_quant} (upstream K-quant corruption)")
+                                elif len(quants) > 1:
+                                    print(f"[Trellis2] WARNING: Q8_0 512 texture model not found; {gguf_quant} may produce corrupt textures")
+                                return config_file, model_file, True
                 suf     = f"_{precision}" if precision else ""
                 pattern = _os.path.join(_search_root, "**", f"{basename}{suf}.safetensors")
                 hits    = _glob.glob(pattern, recursive=True)
