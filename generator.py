@@ -1164,6 +1164,12 @@ class Trellis2GGUFGenerator(BaseGenerator):
                             ns = _ov.__dict__
                             if "torch" not in ns:
                                 import torch as _t; ns["torch"] = _t
+                            if "tqdm" not in ns:
+                                try:
+                                    from tqdm import tqdm as _tq
+                                    ns["tqdm"] = _tq
+                                except ImportError:
+                                    ns["tqdm"] = lambda _it, *a, **k: _it
                             exec(compile(func_src, str(_pf), "exec"), ns)  # noqa: S102
                             print("[Trellis2] Injected tiled_flexible_dual_grid_to_mesh "
                                   "into o_voxel.convert")
