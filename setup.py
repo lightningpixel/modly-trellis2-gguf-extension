@@ -601,7 +601,10 @@ if __name__ == "__main__":
         setup(
             python_exe   = args["python_exe"],
             ext_dir      = Path(args["ext_dir"]),
-            gpu_sm       = int(args.get("gpu_sm",       86)),
+            # 0 = "unknown" sentinel: setup() and _install_cuda_wheels() fall back
+            # to cuda_version for Blackwell detection only when gpu_sm is 0.
+            # A hard-coded 86 default would mask an undetected SM 12.x GPU.
+            gpu_sm       = int(args.get("gpu_sm",        0)),
             cuda_version = int(args.get("cuda_version",  0)),
         )
     elif len(sys.argv) >= 4:
