@@ -167,13 +167,27 @@ def _install_cuda_wheels(venv: Path, gpu_sm: int, cuda_ver: int = 0) -> None:
     """Download and install custom CUDA wheels from pozzettiandrea.github.io."""
     is_win = platform.system() == "Windows"
     python_tag   = f"cp{sys.version_info.major}{sys.version_info.minor}"
-    platform_tag = "win_amd64" if is_win else "linux_x86_64"
+    # "x86_64" (not "linux_x86_64") — wheel filenames now use manylinux_2_35_x86_64,
+    # which doesn't contain "linux_x86_64" as a substring. "x86_64" alone is safe
+    # here since win_amd64 filenames never contain it.
+    platform_tag = "win_amd64" if is_win else "x86_64"
     torch_ver    = _get_torch_version(venv)
-    is_blackwell = gpu_sm >= 100 or cuda_ver >= 128
+    # See note in setup(): cuda_ver alone (driver/toolkit version) must not
+    # imply Blackwell — only trust it as a fallback when gpu_sm is unknown.
+    is_blackwell = gpu_sm >= 100 or (gpu_sm == 0 and cuda_ver >= 128)
 
-    # Blackwell (SM 12.x / CUDA 12.8+): require cu128 directly.
-    # cu128 wheels exist for all packages and are the only ones with SM 12.x kernels.
-    preferred_cuda_tags: list[str] | None = ["cu128"] if is_blackwell else None
+    # Prefer the CUDA tag matching the torch build actually installed (see the
+    # cu128/cu126/cu124 branches in setup()) — picking an unrelated CUDA tag
+    # (e.g. cu124 wheel against a cu126 torch) causes ABI mismatches at import
+    # time ("undefined symbol"), not just a missing-wheel error.
+    if is_blackwell:
+        # Blackwell (SM 12.x / CUDA 12.8+): require cu128 directly, no fallback —
+        # cu128 is the only build with SM 12.x kernels.
+        preferred_cuda_tags: list[str] | None = ["cu128"]
+    elif gpu_sm == 0 or gpu_sm >= 70:
+        preferred_cuda_tags = ["cu126", None]
+    else:
+        preferred_cuda_tags = ["cu124", None]
 
     print(f"[setup] Installing CUDA wheels (python={python_tag}, platform={platform_tag}, torch={torch_ver}) …")
 
@@ -518,7 +532,11 @@ def setup(python_exe: str, ext_dir: Path, gpu_sm: int, cuda_version: int = 0) ->
         subprocess.run([python_exe, "-m", "venv", str(venv)], check=True)
 
     # ── PyTorch — select build based on GPU architecture / CUDA driver ── #
-    if gpu_sm >= 100 or cuda_version >= 128:
+    # Note: cuda_version reflects the installed driver/toolkit, not the GPU
+    # architecture — a high driver CUDA version on an older (e.g. Ampere) card
+    # is normal and must not force the Blackwell-only wheel set. Only fall
+    # back to cuda_version when gpu_sm couldn't be detected at all.
+    if gpu_sm >= 100 or (gpu_sm == 0 and cuda_version >= 128):
         # Blackwell (RTX 50xx, B100…) — SM 12.x kernels require PyTorch 2.7+
         torch_pkgs  = ["torch==2.7.0", "torchvision==0.22.0"]
         torch_index = "https://download.pytorch.org/whl/cu128"
