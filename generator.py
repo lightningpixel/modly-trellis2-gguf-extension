@@ -70,8 +70,8 @@ _SLAT_INTERVAL     = [0.1, 1.0]
 _SLAT_RESCALE_T    = 4.0
 
 # Allow the sparse structure stage to generate up to this many tokens.
-# 49152 (old default) truncates complex objects — 999999 lets the model
-# use as many voxels as it needs for full detail.
+# 49152 (the upstream default) truncates complex objects; 150000 gives the
+# model enough voxels for full detail without unbounded VRAM growth.
 _MAX_NUM_TOKENS    = 150000
 
 
@@ -125,14 +125,14 @@ class Trellis2GGUFGenerator(BaseGenerator):
     # Load / Unload                                                       #
     # ------------------------------------------------------------------ #
 
-    def _ensure_venv_on_path(self) -> None:
-        """Add the extension venv's site-packages to sys.path if not already present."""
-        import sys
+    @staticmethod
+    def _venv_site_packages() -> Path | None:
+        """Return the extension venv's site-packages directory, or None if absent."""
         import platform
 
         venv = _EXTENSION_DIR / "venv"
         if not venv.exists():
-            return
+            return None
 
         if platform.system() == "Windows":
             sp = venv / "Lib" / "site-packages"
@@ -140,11 +140,21 @@ class Trellis2GGUFGenerator(BaseGenerator):
             lib = venv / "lib"
             candidates = sorted(lib.glob("python3*/site-packages")) if lib.exists() else []
             if not candidates:
-                return
+                return None
             sp = candidates[-1]
 
+        return sp if sp.exists() else None
+
+    def _ensure_venv_on_path(self) -> None:
+        """Add the extension venv's site-packages to sys.path if not already present."""
+        import sys
+
+        sp = self._venv_site_packages()
+        if sp is None:
+            return
+
         sp_str = str(sp)
-        if sp.exists() and sp_str not in sys.path:
+        if sp_str not in sys.path:
             sys.path.insert(0, sp_str)
             print(f"[Trellis2GGUFGenerator] Added venv site-packages to sys.path: {sp_str}")
 
@@ -272,7 +282,13 @@ class Trellis2GGUFGenerator(BaseGenerator):
         if cuda_path:
             p = _os.path.join(cuda_path, "bin", "ptxas.exe")
             if _os.path.isfile(p):
-                v = _ver_from_path(p) or _ver_from_binary(p)
+                # (0, 0) is a truthy tuple, so this must be an explicit test:
+                # `_ver_from_path(p) or _ver_from_binary(p)` would never fall
+                # through and a CUDA_PATH outside the standard layout would be
+                # rejected as version 0.0 even when it ships ptxas 12.8+.
+                v = _ver_from_path(p)
+                if v == (0, 0):
+                    v = _ver_from_binary(p)
                 candidates.append((v, p))
 
         # 3. triton-windows bundled ptxas (inside the triton package dir)
@@ -1191,11 +1207,15 @@ class Trellis2GGUFGenerator(BaseGenerator):
         Ensure ComfyUI-GGUF (city96) files are present at the path that trellis2_gguf's
         _setup_native_gguf() searches.  Without these, GGUF dequant falls back to CPU.
         """
-        import os, urllib.request
-        from pathlib import Path
+        import urllib.request
 
-        utils_dir = Path(_EXTENSION_DIR) / "venv" / "Lib" / "site-packages" / "trellis2_gguf" / "utils"
-        gguf_dir  = (utils_dir / ".." / ".." / ".." / "ComfyUI-GGUF").resolve()
+        sp = self._venv_site_packages()
+        if sp is None:
+            return
+        # _setup_native_gguf() searches trellis2_gguf/utils/../../../ComfyUI-GGUF,
+        # i.e. <site-packages>/../ComfyUI-GGUF. Derive it the same way setup.py does
+        # so Windows (<venv>/Lib) and Linux (<venv>/lib/pythonX.Y) stay in sync.
+        gguf_dir = sp.parent / "ComfyUI-GGUF"
 
         _FILES = ["ops.py", "dequant.py", "loader.py"]
         if all((gguf_dir / f).exists() for f in _FILES):
@@ -1364,7 +1384,6 @@ class Trellis2GGUFGenerator(BaseGenerator):
         loaded and VRAM is under pressure (error 700 propagates to all subsequent
         torch.cuda calls).
         """
-        import numpy as np
         from PIL import Image as PILImage
 
         image = PILImage.open(io.BytesIO(image_bytes)).convert("RGBA")

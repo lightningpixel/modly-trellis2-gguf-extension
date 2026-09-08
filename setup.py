@@ -4,7 +4,7 @@ Trellis.2 GGUF — extension setup script.
 Creates an isolated venv and installs all required dependencies:
   - PyTorch (version selected by GPU SM / CUDA driver)
   - Custom CUDA wheels from https://pozzettiandrea.github.io/cuda-wheels/
-      cumesh, nvdiffrast, nvdiffrec_render, flex_gemm, o_voxel
+      cumesh, flex-gemm (required); nvdiffrast, o-voxel (optional)
   - triton-windows (Windows only)
   - Python packages from requirements (gguf, meshlib, rembg, trimesh, …)
   - trellis2_gguf source package (from ComfyUI-Trellis2-GGUF GitHub)
@@ -176,6 +176,16 @@ def _install_cuda_wheels(venv: Path, gpu_sm: int, cuda_ver: int = 0) -> None:
     # here since win_amd64 filenames never contain it.
     platform_tag = "win_amd64" if is_win else "x86_64"
     torch_ver    = _get_torch_version(venv)
+    if not torch_ver:
+        print(
+            "[setup] ERROR: could not read the installed torch version — no CUDA "
+            "wheel can be matched without it."
+        )
+        print(
+            "[setup]   Skipping CUDA wheels; the extension will not load. "
+            "Check the PyTorch install above, then run Repair again."
+        )
+        return
     # See note in setup(): cuda_ver alone (driver/toolkit version) must not
     # imply Blackwell — only trust it as a fallback when gpu_sm is unknown.
     is_blackwell = gpu_sm >= 100 or (gpu_sm == 0 and cuda_ver >= 128)
@@ -394,11 +404,15 @@ def _install_comfyui_gguf(venv: Path) -> None:
     """
     Download ops.py / dequant.py / loader.py from city96/ComfyUI-GGUF into the
     path that trellis2_gguf's _setup_native_gguf() searches:
-      <venv>/Lib/ComfyUI-GGUF/
+      <site-packages>/../ComfyUI-GGUF/
     Without these files the GGUF dequant falls back to a CPU implementation.
     """
     sp       = _site_packages(venv)
-    gguf_dir = sp.parent.parent / "Lib" / "ComfyUI-GGUF"   # <venv>/Lib/ComfyUI-GGUF
+    # The search path is relative to the installed package
+    # (trellis2_gguf/utils/../../../ComfyUI-GGUF), so it must be derived from
+    # site-packages: hardcoding <venv>/Lib works on Windows but not on Linux,
+    # where site-packages lives under <venv>/lib/pythonX.Y/.
+    gguf_dir = sp.parent / "ComfyUI-GGUF"
     _FILES   = ["ops.py", "dequant.py", "loader.py"]
 
     if all((gguf_dir / f).exists() for f in _FILES):
