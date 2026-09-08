@@ -140,8 +140,12 @@ def _find_wheel_url(
     tv_tag = f"{major}{minor}"
 
     def _candidates(maj: int, min_: int, cuda_tag: str | None) -> list[str]:
-        # Index display names use "torch26", GitHub URLs use "torch2.6"
-        tags = [f"torch{maj}{min_}", f"torch{maj}.{min_}"]
+        # Index display names use "torch26", GitHub URLs use "torch2.6".
+        # The trailing "-" (every filename is "…torchX.Y-cpNNN-…") makes the
+        # match exact: without it "torch21" also matches "torch2.10"/"torch2.11",
+        # so the minor-version fallback below could silently install a wheel
+        # built for a much newer torch and fail at import with "undefined symbol".
+        tags = [f"torch{maj}{min_}-", f"torch{maj}.{min_}-"]
         return [
             _abs(link) for link in links
             if python_tag in link.split("/")[-1]
