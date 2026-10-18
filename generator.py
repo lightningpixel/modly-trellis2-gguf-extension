@@ -38,8 +38,9 @@ _os_env.environ.setdefault("ATTN_BACKEND", "sdpa")
 # HuggingFace model repo
 _HF_REPO = "Aero-Ex/Trellis2-GGUF"
 
-# Files to download: all GGUF variants + JSON configs + Vision encoder + decoders/encoders
-# (skip BF16/FP8 safetensors which add ~80 GB to the download)
+# Files to download: default-quant GGUFs + JSON configs + Vision encoder + decoders/encoders
+# (skip BF16/FP8 safetensors which add ~80 GB to the download). Other quants are
+# fetched on demand by _ensure_gguf_files.
 _HF_ALLOW_PATTERNS = [
     "pipeline.json",
     "texturing_pipeline.json",
@@ -49,13 +50,14 @@ _HF_ALLOW_PATTERNS = [
     "encoders/**/*.json",
     "encoders/**/*.safetensors",
     "refiner/*.json",
-    "refiner/*.gguf",
+    "refiner/*_Q5_K_M.gguf",
     "shape/*.json",
-    "shape/*.gguf",
-    # texture GGUFs are required by the Texture Mesh node (~9 GB for all quants);
-    # without them this fallback download leaves that node unusable.
+    "shape/*_Q5_K_M.gguf",
+    # texture GGUFs are required by the Texture Mesh node, which always loads
+    # Q5_K_M for 1024 and Q8_0 for 512 (upstream K-quant corruption).
     "texture/*.json",
-    "texture/*.gguf",
+    "texture/*_1024_bf16_Q5_K_M.gguf",
+    "texture/*_512_bf16_Q8_0.gguf",
 ]
 
 # Sampler params — matched to ComfyUI reference workflow (Q4 high-quality results)
@@ -94,12 +96,23 @@ class Trellis2GGUFGenerator(BaseGenerator):
             return self.model_dir.parent
         return self.model_dir
 
+    @property
+    def _pipeline_dir(self) -> Path:
+        """
+        Modly's downloader fills model_dir (<models>/trellis2/{generate|refine});
+        _auto_download fills _weights_dir. Use whichever holds pipeline.json so a
+        completed node download never triggers a second full download.
+        """
+        if (self.model_dir / "pipeline.json").exists():
+            return self.model_dir
+        return self._weights_dir
+
     # ------------------------------------------------------------------ #
     # Download                                                            #
     # ------------------------------------------------------------------ #
 
     def is_downloaded(self) -> bool:
-        return (self._weights_dir / "pipeline.json").exists()
+        return (self._pipeline_dir / "pipeline.json").exists()
 
     def _auto_download(self) -> None:
         import os
@@ -120,6 +133,33 @@ class Trellis2GGUFGenerator(BaseGenerator):
             token=token,
         )
         print("[Trellis2GGUFGenerator] Download complete.")
+
+    def _ensure_gguf_files(self, gguf_quant: str, pipeline_type: str, progress_cb) -> None:
+        """Download the DiT GGUFs of the selected quant if missing.
+
+        Modly hosts that read the manifest's weight_variants refuse generation
+        before this point when the quant is not installed; this fallback keeps
+        older hosts, which only download Q5_K_M, working.
+        """
+        from huggingface_hub import hf_hub_download
+
+        basenames = ["refiner/ss_flow_img_dit_1_3B_64_bf16"]
+        if pipeline_type != "1024":
+            basenames.append("shape/slat_flow_img2shape_dit_1_3B_512_bf16")
+        if pipeline_type != "512":
+            basenames.append("shape/slat_flow_img2shape_dit_1_3B_1024_bf16")
+
+        target  = self._pipeline_dir
+        missing = [f"{b}_{gguf_quant}.gguf" for b in basenames
+                   if not (target / f"{b}_{gguf_quant}.gguf").exists()]
+
+        for i, filename in enumerate(missing, 1):
+            self._report(progress_cb, 2, f"Downloading {gguf_quant} weights ({i}/{len(missing)})...")
+            print(f"[Trellis2GGUFGenerator] Downloading {filename} -> {target}")
+            try:
+                hf_hub_download(repo_id=self.hf_repo or _HF_REPO, filename=filename, local_dir=str(target))
+            except Exception as exc:
+                raise RuntimeError(f"Could not download {filename} for quantization {gguf_quant}: {exc}") from exc
 
     # ------------------------------------------------------------------ #
     # Load / Unload                                                       #
@@ -658,7 +698,7 @@ class Trellis2GGUFGenerator(BaseGenerator):
             self._probe_cumesh_remesh()
 
         pipeline = Trellis2ImageTo3DPipeline.from_pretrained(
-            str(self._weights_dir),
+            str(self._pipeline_dir),
             keep_models_loaded=False,  # free sub-models between stages to save VRAM
             enable_gguf=True,
             gguf_quant=gguf_quant,
@@ -749,6 +789,8 @@ class Trellis2GGUFGenerator(BaseGenerator):
         fg_ratio          = float(params.get("foreground_ratio", 0.85))
         remesh_resolution = int(params.get("remesh_resolution", 768))
         seed              = self._resolve_seed(params)
+
+        self._ensure_gguf_files(gguf_quant, pipeline_type, progress_cb)
 
         # --- Pre-process image ---
         self._report(progress_cb, 5, "Removing background...")

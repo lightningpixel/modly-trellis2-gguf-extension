@@ -4,7 +4,7 @@
   "type": "model",
   "source": "https://huggingface.co/Aero-Ex/Trellis2-GGUF",
   "description": "Aero-Ex Trellis.2 — GGUF quantized image-to-3D model (1–3 B params). Generates a geometry mesh in one pass via sparse structure + shape SLaT. Requires ~6–10 GB VRAM depending on quantization.",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "author": "Lightning Pixel",
   "generator_class": "Trellis2GGUFGenerator",
   "vram_gb": 8,
@@ -17,6 +17,81 @@
       "output": "mesh",
       "hf_repo": "Aero-Ex/Trellis2-GGUF",
       "download_check": "pipeline.json",
+      "hf_include_prefixes": [
+        "pipeline.json",
+        "Vision/",
+        "decoders/Stage1/",
+        "decoders/Stage2/shape_dec_next_dc_f16c32_fp16.",
+        "refiner/ss_flow_img_dit_1_3B_64_bf16.json",
+        "shape/slat_flow_img2shape_dit_1_3B_512_bf16.json",
+        "shape/slat_flow_img2shape_dit_1_3B_1024_bf16.json"
+      ],
+      "weight_variants": {
+        "param": "gguf_quant",
+        "default": "Q5_K_M",
+        "options": [
+          {
+            "id": "Q4_K_M",
+            "label": "Q4_K_M",
+            "size_gb": 2.4,
+            "include_prefixes": [
+              "refiner/ss_flow_img_dit_1_3B_64_bf16_Q4_K_M.gguf",
+              "shape/slat_flow_img2shape_dit_1_3B_512_bf16_Q4_K_M.gguf",
+              "shape/slat_flow_img2shape_dit_1_3B_1024_bf16_Q4_K_M.gguf"
+            ],
+            "checks": [
+              "refiner/ss_flow_img_dit_1_3B_64_bf16_Q4_K_M.gguf",
+              "shape/slat_flow_img2shape_dit_1_3B_512_bf16_Q4_K_M.gguf",
+              "shape/slat_flow_img2shape_dit_1_3B_1024_bf16_Q4_K_M.gguf"
+            ]
+          },
+          {
+            "id": "Q5_K_M",
+            "label": "Q5_K_M",
+            "size_gb": 2.9,
+            "include_prefixes": [
+              "refiner/ss_flow_img_dit_1_3B_64_bf16_Q5_K_M.gguf",
+              "shape/slat_flow_img2shape_dit_1_3B_512_bf16_Q5_K_M.gguf",
+              "shape/slat_flow_img2shape_dit_1_3B_1024_bf16_Q5_K_M.gguf"
+            ],
+            "checks": [
+              "refiner/ss_flow_img_dit_1_3B_64_bf16_Q5_K_M.gguf",
+              "shape/slat_flow_img2shape_dit_1_3B_512_bf16_Q5_K_M.gguf",
+              "shape/slat_flow_img2shape_dit_1_3B_1024_bf16_Q5_K_M.gguf"
+            ]
+          },
+          {
+            "id": "Q6_K",
+            "label": "Q6_K",
+            "size_gb": 3.4,
+            "include_prefixes": [
+              "refiner/ss_flow_img_dit_1_3B_64_bf16_Q6_K.gguf",
+              "shape/slat_flow_img2shape_dit_1_3B_512_bf16_Q6_K.gguf",
+              "shape/slat_flow_img2shape_dit_1_3B_1024_bf16_Q6_K.gguf"
+            ],
+            "checks": [
+              "refiner/ss_flow_img_dit_1_3B_64_bf16_Q6_K.gguf",
+              "shape/slat_flow_img2shape_dit_1_3B_512_bf16_Q6_K.gguf",
+              "shape/slat_flow_img2shape_dit_1_3B_1024_bf16_Q6_K.gguf"
+            ]
+          },
+          {
+            "id": "Q8_0",
+            "label": "Q8_0",
+            "size_gb": 4.3,
+            "include_prefixes": [
+              "refiner/ss_flow_img_dit_1_3B_64_bf16_Q8_0.gguf",
+              "shape/slat_flow_img2shape_dit_1_3B_512_bf16_Q8_0.gguf",
+              "shape/slat_flow_img2shape_dit_1_3B_1024_bf16_Q8_0.gguf"
+            ],
+            "checks": [
+              "refiner/ss_flow_img_dit_1_3B_64_bf16_Q8_0.gguf",
+              "shape/slat_flow_img2shape_dit_1_3B_512_bf16_Q8_0.gguf",
+              "shape/slat_flow_img2shape_dit_1_3B_1024_bf16_Q8_0.gguf"
+            ]
+          }
+        ]
+      },
       "params_schema": [
         {
           "id": "pipeline_type",
@@ -82,7 +157,7 @@
             { "value": 768,  "label": "768" },
             { "value": 1024, "label": "1024" }
           ],
-          "tooltip": "Voxel grid resolution used for the post-generation narrow-band remesh. Higher = fewer holes and junction artifacts, but more VRAM and time."
+          "tooltip": "Voxel grid resolution used for the post-generation narrow-band remesh. Higher = fewer holes and junction artifacts, but more VRAM and time. This setting drives the VRAM peak: 512 needs about 3 GB less than 768."
         },
         {
           "id": "seed",
@@ -103,6 +178,16 @@
       "output": "mesh",
       "hf_repo": "Aero-Ex/Trellis2-GGUF",
       "download_check": "pipeline.json",
+      "hf_include_prefixes": [
+        "pipeline.json",
+        "Vision/",
+        "encoders/shape_enc_next_dc_f16c32_fp16.",
+        "decoders/Stage2/tex_dec_next_dc_f16c32_fp16.",
+        "texture/slat_flow_imgshape2tex_dit_1_3B_512_bf16.json",
+        "texture/slat_flow_imgshape2tex_dit_1_3B_512_bf16_Q8_0.",
+        "texture/slat_flow_imgshape2tex_dit_1_3B_1024_bf16.json",
+        "texture/slat_flow_imgshape2tex_dit_1_3B_1024_bf16_Q5_K_M."
+      ],
       "params_schema": [
         {
           "id": "texture_resolution",

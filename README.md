@@ -51,6 +51,19 @@ The workflow above is the recommended starting point. It chains the two nodes ba
 
 ---
 
+## Download size
+
+Each node downloads only what it uses:
+
+| Node | Download |
+|---|---|
+| Generate Mesh | ~2.3 GB shared files + one quantization: Q4_K_M 2.4 GB · **Q5_K_M 2.9 GB (default)** · Q6_K 3.4 GB · Q8_0 4.3 GB |
+| Texture Mesh | ~5.2 GB |
+
+Installing both nodes with the default quantization takes about **10.4 GB**. Other quantizations can be added or removed one by one from the extension's panel on the Extensions page (Modly 0.4.3+).
+
+---
+
 ## Model source
 
 Weights: [Aero-Ex/Trellis2-GGUF](https://huggingface.co/Aero-Ex/Trellis2-GGUF) on HuggingFace
