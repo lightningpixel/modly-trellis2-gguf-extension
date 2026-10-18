@@ -20,6 +20,8 @@ import platform
 import re
 import subprocess
 import sys
+import tempfile
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -177,15 +179,10 @@ def _install_cuda_wheels(venv: Path, gpu_sm: int, cuda_ver: int = 0) -> None:
     platform_tag = "win_amd64" if is_win else "x86_64"
     torch_ver    = _get_torch_version(venv)
     if not torch_ver:
-        print(
-            "[setup] ERROR: could not read the installed torch version — no CUDA "
-            "wheel can be matched without it."
+        raise RuntimeError(
+            "[setup] Could not read the installed torch version, so no CUDA wheel "
+            "can be matched. Check the PyTorch install above, then run Repair again."
         )
-        print(
-            "[setup]   Skipping CUDA wheels; the extension will not load. "
-            "Check the PyTorch install above, then run Repair again."
-        )
-        return
     # See note in setup(): cuda_ver alone (driver/toolkit version) must not
     # imply Blackwell — only trust it as a fallback when gpu_sm is unknown.
     is_blackwell = gpu_sm >= 100 or (gpu_sm == 0 and cuda_ver >= 128)
@@ -217,33 +214,116 @@ def _install_cuda_wheels(venv: Path, gpu_sm: int, cuda_ver: int = 0) -> None:
             except subprocess.CalledProcessError:
                 pass  # not installed — nothing to do
 
+    # A required wheel that fails must fail the whole setup: exiting 0 here makes
+    # Modly mark the extension ready, and the user only sees "No module named
+    # 'cumesh'/'flex_gemm'" at generation time.
+    failed_required: list[str] = []
+
     for lib in _CUDA_WHEELS:
         print(f"[setup] Finding wheel for {lib} …")
         url, _ = _find_wheel_url(lib, python_tag, platform_tag, torch_ver, preferred_cuda_tags)
         if url is None:
             if lib in _CUDA_WHEELS_REQUIRED:
                 cuda_hint = " (cu128)" if is_blackwell else ""
-                print(
-                    f"[setup] ERROR: No compatible wheel found for {lib} (torch {torch_ver}{cuda_hint}).\n"
-                    f"[setup]   This is a required dependency — the extension will fail to load.\n"
-                    f"[setup]   Check https://pozzettiandrea.github.io/cuda-wheels/{lib}/ for available wheels."
+                failed_required.append(
+                    f"{lib}: no wheel for torch {torch_ver}{cuda_hint}, {python_tag}, {platform_tag} "
+                    f"(see {_WHEELS_INDEX_BASE}{lib}/)"
                 )
             else:
                 print(f"[setup] WARNING: No wheel found for {lib} — texture baking will be unavailable.")
             continue
 
         print(f"[setup] Installing {lib} from {url} …")
-        try:
-            # --force-reinstall ensures pip replaces an already-installed wheel
-            # even when the local version tag changed (e.g. cu126 → cu128).
-            # pip normally skips installs where the base version matches.
-            _pip(venv, "install", "--force-reinstall", "--no-deps", url)
-            print(f"[setup] {lib} installed.")
-        except subprocess.CalledProcessError as exc:
-            if lib in _CUDA_WHEELS_REQUIRED:
-                print(f"[setup] ERROR: Failed to install {lib} ({exc}). The extension will not load.")
-            else:
-                print(f"[setup] WARNING: Failed to install {lib} ({exc}). Texture baking may be unavailable.")
+        error: Exception | None = None
+        for attempt in (1, 2):
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    wheel = _fetch_wheel(url, Path(tmp))
+                    # --force-reinstall ensures pip replaces an already-installed wheel
+                    # even when the local version tag changed (e.g. cu126 → cu128).
+                    # pip normally skips installs where the base version matches.
+                    _pip(venv, "install", "--force-reinstall", "--no-deps", str(wheel))
+                print(f"[setup] {lib} installed.")
+                error = None
+                break
+            except (subprocess.CalledProcessError, OSError, zipfile.BadZipFile) as exc:
+                error = exc
+                if attempt == 1:
+                    print(f"[setup] Install of {lib} failed ({exc}); retrying once …")
+        if error is None:
+            continue
+        if lib in _CUDA_WHEELS_REQUIRED:
+            failed_required.append(f"{lib}: pip could not install {url} ({error})")
+        else:
+            print(f"[setup] WARNING: Failed to install {lib} ({error}). Texture baking may be unavailable.")
+
+    if failed_required:
+        raise RuntimeError(
+            "[setup] Required CUDA wheels could not be installed, so the extension "
+            "cannot load:\n  - " + "\n  - ".join(failed_required) + _platform_hint()
+        )
+
+
+def _fetch_wheel(url: str, dest_dir: Path) -> Path:
+    """Download a wheel and repair a non-normalized .dist-info directory name.
+
+    Some upstream Windows builds (e.g. flex_gemm/o_voxel cu126torch2.6) ship
+    "flex-gemm-1.0.0+….dist-info": pip splits it at the first hyphen, reads the
+    project name as "flex" and rejects the wheel with "inconsistent name".
+    """
+    whl = dest_dir / urllib.parse.unquote(url.rsplit("/", 1)[-1])
+    with urllib.request.urlopen(url, timeout=300) as resp:
+        whl.write_bytes(resp.read())
+
+    project, version = whl.name.split("-")[:2]
+    good = f"{project}-{version}.dist-info"
+    with zipfile.ZipFile(whl) as zin:
+        dist_infos = {n.split("/")[0] for n in zin.namelist() if n.split("/")[0].endswith(".dist-info")}
+        bad = [d for d in dist_infos if d != good]
+        if not bad or len(dist_infos) != 1:
+            return whl
+        old = bad[0]
+        fixed = dest_dir / "fixed" / whl.name
+        fixed.parent.mkdir()
+        with zipfile.ZipFile(fixed, "w", zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                data = zin.read(item.filename)
+                name = item.filename
+                if name.startswith(old + "/"):
+                    name = good + name[len(old):]
+                    if name.endswith("/RECORD"):
+                        data = data.replace(f"{old}/".encode(), f"{good}/".encode())
+                zout.writestr(name, data)
+    print(f"[setup] Repaired wheel metadata dir {old} -> {good}")
+    return fixed
+
+
+def _platform_hint() -> str:
+    """Linux wheels are built for manylinux_2_35: older glibc rejects them."""
+    if platform.system() != "Linux":
+        return ""
+    libc, version = platform.libc_ver()
+    if libc != "glibc" or not version:
+        return ""
+    if tuple(int(x) for x in version.split(".")[:2]) >= (2, 35):
+        return ""
+    return (
+        f"\n[setup] This system has glibc {version}; the CUDA wheels need glibc 2.35 "
+        "or newer (Ubuntu 22.04+, Fedora 36+, Debian 12+)."
+    )
+
+
+def _verify_native_imports(venv: Path) -> None:
+    """Import the required CUDA modules in the venv, so a broken wheel fails setup."""
+    modules = [lib.replace("-", "_") for lib in _CUDA_WHEELS_REQUIRED]
+    code = "import torch\n" + "".join(f"import {m}\n" for m in modules)
+    result = subprocess.run([str(_python(venv)), "-c", code], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"[setup] {', '.join(modules)} installed but failed to import:\n"
+            f"{result.stderr.strip()[-2000:]}"
+        )
+    print(f"[setup] Verified imports: {', '.join(modules)}.")
 
 
 # --------------------------------------------------------------------------- #
@@ -607,6 +687,8 @@ def setup(python_exe: str, ext_dir: Path, gpu_sm: int, cuda_version: int = 0) ->
     # Runs on every install AND repair (idempotent) so the function is
     # always available even when _install_trellis2_gguf is skipped.
     _patch_o_voxel_tiled_fdg(_site_packages(venv))
+
+    _verify_native_imports(venv)
 
     print("[setup] Done. Venv ready at:", venv)
 

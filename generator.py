@@ -1363,9 +1363,12 @@ class Trellis2GGUFGenerator(BaseGenerator):
         try:
             from trellis2_gguf.pipelines import Trellis2ImageTo3DPipeline  # noqa
         except ImportError as exc:
+            missing = getattr(exc, "name", None) or "trellis2_gguf"
             raise RuntimeError(
-                "[Trellis2GGUFGenerator] trellis2_gguf not found. "
-                "Click Repair on the Models page to re-run setup.py."
+                f"[Trellis2GGUFGenerator] Could not import trellis2_gguf: module "
+                f"'{missing}' is missing ({exc}). Click Repair on the Models page to "
+                "re-run setup.py; if Repair fails, its log names the dependency that "
+                "could not be installed."
             ) from exc
 
     # ------------------------------------------------------------------ #
