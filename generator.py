@@ -28,6 +28,7 @@ from typing import Callable, Optional
 from services.generators.base import BaseGenerator, smooth_progress, GenerationCancelled  # noqa: F401
 
 _EXTENSION_DIR = Path(__file__).parent
+_REMBG = {"session": None}  # one rembg session per process
 
 # Attention backend: trellis2_gguf defaults to 'flash_attn', which we don't ship
 # (no prebuilt flash-attn wheel for Windows). Force PyTorch's native SDPA — read by
@@ -212,6 +213,8 @@ class Trellis2GGUFGenerator(BaseGenerator):
         # gguf_quant is not available at load time (no UI params yet),
         # so default to Q5_K_M.  generate() will reload if the user
         # picks a different quantisation on first inference.
+        import torch  # noqa: F401  (registers CUDA DLL dirs before onnxruntime)
+        self._rembg_session()
         self._load_pipeline("Q5_K_M")
 
     def _prepare_dinov3_dir(self) -> str | None:
@@ -1417,6 +1420,23 @@ class Trellis2GGUFGenerator(BaseGenerator):
     # Helpers                                                             #
     # ------------------------------------------------------------------ #
 
+    def _rembg_session(self):
+        if _REMBG["session"] is None:
+            import rembg
+            from PIL import Image as _PILImage
+            try:
+                sess = rembg.new_session(providers=[("CUDAExecutionProvider", {
+                    "arena_extend_strategy": "kSameAsRequested", "gpu_mem_limit": 2 * 1024 ** 3,
+                    "cudnn_conv_algo_search": "HEURISTIC"}), "CPUExecutionProvider"])
+                rembg.remove(_PILImage("RGBA", (64, 64), (255, 255, 255, 255)), session=sess)
+                if "CUDAExecutionProvider" not in sess.inner_session.get_providers():
+                    raise RuntimeError("no CUDA provider")
+            except Exception:
+                sess = rembg.new_session(providers=["CPUExecutionProvider"])
+            print(f"[Trellis2GGUFGenerator] rembg providers: {sess.inner_session.get_providers()}")
+            _REMBG["session"] = sess
+        return _REMBG["session"]
+
     def _resolve_seed(self, params: dict) -> int:
         seed = int(params.get("seed", -1))
         return random.randint(0, 2**31 - 1) if seed == -1 else seed
@@ -1436,7 +1456,9 @@ class Trellis2GGUFGenerator(BaseGenerator):
         try:
             import rembg
             if force_cpu:
-                session = rembg.new_session(providers=["CPUExecutionProvider"])
+                # One session per process (new_session costs ~10 s). GPU session when onnxruntime-gpu
+                # works (created before the pipeline is resident), CPU otherwise.
+                session = self._rembg_session()
                 image   = rembg.remove(image, session=session)
             else:
                 try:
